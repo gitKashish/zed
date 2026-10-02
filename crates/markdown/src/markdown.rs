@@ -3107,6 +3107,18 @@ impl Element for MarkdownElement {
                         self.pop_markdown_block_quote(&mut builder);
                     }
                     MarkdownTagEnd::CodeBlock => {
+                        let show_copy_button = matches!(
+                            &self.code_block_renderer,
+                            CodeBlockRenderer::Default { copy_button_visibility, .. }
+                                if *copy_button_visibility != CopyButtonVisibility::Hidden
+                        );
+                        // Copy the rendered text instead of slicing the source, because the
+                        // source of a code block nested in a list or block quote includes the
+                        // container's indentation and `>` markers. This must happen before
+                        // `trim_trailing_newline` drops the final newline and `pop_div` moves
+                        // the text out of the builder.
+                        let code_content =
+                            show_copy_button.then(|| builder.pending_line.text.clone());
                         builder.trim_trailing_newline();
 
                         builder.pop_div();
@@ -3124,14 +3136,6 @@ impl Element for MarkdownElement {
                             let copy_button_visibility = *copy_button_visibility;
                             let wrap_button_visibility = *wrap_button_visibility;
                             builder.modify_current_div(|el| {
-                                let content_range = parser::extract_code_block_content_range(
-                                    &parsed_markdown.source()[range.clone()],
-                                );
-                                let content_range = content_range.start + range.start
-                                    ..content_range.end + range.start;
-
-                                let code = parsed_markdown.source()[content_range].to_string();
-
                                 let any_hover = copy_button_visibility
                                     == CopyButtonVisibility::VisibleOnHover
                                     || wrap_button_visibility
@@ -3143,6 +3147,9 @@ impl Element for MarkdownElement {
                                 let use_hover = any_hover && !any_always;
 
                                 let button_row = h_flex()
+                                    .debug_selector(|| {
+                                        format!("markdown_code_block_buttons_{}", range.end)
+                                    })
                                     .gap_0p5()
                                     .absolute()
                                     .bg(cx.theme().colors().editor_background)
@@ -3168,16 +3175,13 @@ impl Element for MarkdownElement {
                                             ))
                                         },
                                     )
-                                    .when(
-                                        copy_button_visibility != CopyButtonVisibility::Hidden,
-                                        |this| {
-                                            this.child(render_copy_code_block_button(
-                                                range.end,
-                                                code,
-                                                self.markdown.clone(),
-                                            ))
-                                        },
-                                    );
+                                    .when_some(code_content, |this, code_content| {
+                                        this.child(render_copy_code_block_button(
+                                            range.end,
+                                            code_content,
+                                            self.markdown.clone(),
+                                        ))
+                                    });
 
                                 el.child(button_row)
                             });
