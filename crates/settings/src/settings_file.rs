@@ -4,6 +4,7 @@ use fs::{Fs, PathEventKind};
 use futures::{StreamExt, channel::mpsc};
 use gpui::{App, BackgroundExecutor, ReadGlobal};
 use std::{path::PathBuf, sync::Arc, time::Duration};
+use util::ResultExt;
 
 #[cfg(test)]
 mod tests {
@@ -230,7 +231,7 @@ pub fn watch_config_file(
     let (tx, rx) = mpsc::unbounded();
     let task = executor.spawn(async move {
         let path = fs.canonicalize(&path).await.unwrap_or_else(|_| path);
-        let (events, _) = fs.watch(&path, Duration::from_millis(100)).await;
+        let (events, watcher) = fs.watch(&path, Duration::from_millis(100)).await;
         futures::pin_mut!(events);
 
         let contents = fs.load(&path).await.unwrap_or_default();
@@ -242,6 +243,11 @@ pub fn watch_config_file(
             if events.next().await.is_none() {
                 break;
             }
+
+            // Saving by replacing the file (e.g. `sed -i`, atomic saves, `git checkout`) drops
+            // the watch on the old file, so register it again. This is a no-op while the
+            // existing watch is still valid.
+            watcher.add(&path).log_err();
 
             if let Ok(contents) = fs.load(&path).await
                 && tx.unbounded_send(contents).is_err()
